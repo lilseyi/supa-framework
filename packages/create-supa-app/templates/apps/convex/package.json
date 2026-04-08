@@ -1,0 +1,17 @@
+{
+  "name": "@{{APP_SLUG}}/convex",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "convex dev"
+  },
+  "dependencies": {
+    "@supa/convex": "workspace:*",
+    "@{{APP_SLUG}}/shared": "workspace:*",
+    "convex": "^1.16.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

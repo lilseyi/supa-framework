@@ -1,0 +1,17 @@
+{
+  "name": "create-supa-app",
+  "version": "0.1.0",
+  "description": "Interactive scaffolder for new Supa apps",
+  "bin": {
+    "create-supa-app": "src/index.js"
+  },
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src",
+    "templates"
+  ]
+}
