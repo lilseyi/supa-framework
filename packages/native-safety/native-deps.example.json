@@ -1,0 +1,26 @@
+{
+  "$comment": "Native dependency classification for OTA safety. Core deps are in the baseline native build and safe for static import. Gated deps require runtime NativeModules check before import.",
+  "core": [
+    "react-native",
+    "react-native-gesture-handler",
+    "react-native-reanimated",
+    "react-native-safe-area-context",
+    "react-native-screens",
+    "@react-native-async-storage/async-storage",
+    "@react-native-community/netinfo",
+    "expo",
+    "expo-constants",
+    "expo-file-system",
+    "expo-font",
+    "expo-linking",
+    "expo-router",
+    "expo-status-bar",
+    "expo-updates"
+  ],
+  "gated": [
+    "expo-linear-gradient",
+    "expo-av",
+    "expo-video",
+    "expo-audio"
+  ]
+}

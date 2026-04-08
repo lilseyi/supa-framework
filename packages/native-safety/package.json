@@ -1,0 +1,35 @@
+{
+  "name": "@supa/native-safety",
+  "version": "0.1.0",
+  "description": "Native dependency gating enforcement for Expo apps — critical for safe OTA updates",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "bin": {
+    "check-fingerprint": "src/check-fingerprint.js",
+    "check-native-imports": "src/check-native-imports.js"
+  },
+  "files": [
+    "src",
+    "native-deps.example.json"
+  ],
+  "scripts": {
+    "check-fingerprint": "node src/check-fingerprint.js",
+    "check-native-imports": "node src/check-native-imports.js"
+  },
+  "peerDependencies": {
+    "@expo/fingerprint": ">=0.6.0"
+  },
+  "peerDependenciesMeta": {
+    "@expo/fingerprint": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "expo",
+    "react-native",
+    "ota",
+    "native-modules",
+    "fingerprint"
+  ],
+  "license": "MIT"
+}
