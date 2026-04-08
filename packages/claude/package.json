@@ -1,0 +1,21 @@
+{
+  "name": "@supa/claude",
+  "version": "0.1.0",
+  "description": "Claude Code configuration templates for Supa apps",
+  "type": "module",
+  "bin": {
+    "supa-claude": "src/sync.js"
+  },
+  "files": [
+    "src",
+    "templates"
+  ],
+  "keywords": [
+    "supa",
+    "claude",
+    "ai",
+    "agent",
+    "configuration"
+  ],
+  "license": "MIT"
+}

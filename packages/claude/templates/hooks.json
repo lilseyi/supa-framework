@@ -1,0 +1,16 @@
+{
+  "description": "Project hooks for Supa app",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/ralph-logger.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
