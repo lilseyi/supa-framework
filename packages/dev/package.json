@@ -1,0 +1,13 @@
+{
+  "name": "@supa/dev",
+  "version": "0.1.0",
+  "description": "Development orchestrator — runs Convex dev + Expo together",
+  "main": "src/index.js",
+  "bin": {
+    "supa-dev": "src/index.js"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2"
+  },
+  "license": "MIT"
+}
