@@ -1,0 +1,22 @@
+{
+  "name": "@supa/linter",
+  "version": "0.1.0",
+  "description": "ESLint rules that enforce Supa framework conventions",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./preset": "./src/preset.js"
+  },
+  "files": [
+    "src"
+  ],
+  "peerDependencies": {
+    "eslint": ">=8.0.0"
+  },
+  "keywords": [
+    "eslint",
+    "eslintplugin",
+    "supa"
+  ],
+  "license": "MIT"
+}
