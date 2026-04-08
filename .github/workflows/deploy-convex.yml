@@ -1,0 +1,144 @@
+# Reusable Convex deployment workflow
+#
+# Supports two secret providers:
+#   - "github-secrets": Uses a composite action at .github/actions/load-secrets to export secrets
+#   - "onepassword": Uses 1Password CLI + load-secrets-action to pull from a vault
+#
+# Called by consumer repos via `uses: supa-framework/.github/workflows/deploy-convex.yml@main`
+
+name: Deploy Convex
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (staging or production)"
+        type: string
+        required: true
+      node-version:
+        description: "Node.js version"
+        type: string
+        default: "22"
+      pnpm-version:
+        description: "pnpm version (empty string uses pnpm/action-setup default)"
+        type: string
+        default: ""
+      secret-provider:
+        description: "Secret provider: 'github-secrets' or 'onepassword'"
+        type: string
+        default: "github-secrets"
+      op-vault-prefix:
+        description: "1Password vault prefix for secret references (e.g. 'Studios')"
+        type: string
+        default: ""
+      op-required-secrets:
+        description: "Newline-separated list of 1Password secret mappings (KEY: op://vault/item/field)"
+        type: string
+        default: ""
+      op-optional-secrets:
+        description: "Newline-separated list of optional 1Password secret mappings"
+        type: string
+        default: ""
+      pre-deploy-build-steps:
+        description: "Newline-separated shell commands to run before deploy (e.g. build shared pkg)"
+        type: string
+        default: ""
+      sync-secrets-script:
+        description: "Path to the sync-secrets-to-convex script"
+        type: string
+        default: ""
+      sync-secrets-args:
+        description: "Arguments to pass to the sync-secrets script"
+        type: string
+        default: ""
+      post-deploy-steps:
+        description: "Shell commands to run after successful deployment"
+        type: string
+        default: ""
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: "1Password service account token (required when secret-provider is 'onepassword')"
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy to Convex (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- GitHub Secrets provider ---
+      - name: Load secrets (GitHub)
+        if: ${{ inputs.secret-provider == 'github-secrets' }}
+        uses: ./.github/actions/load-secrets
+        with:
+          secrets-json: ${{ toJSON(secrets) }}
+
+      # --- 1Password provider ---
+      - name: Install 1Password CLI
+        if: ${{ inputs.secret-provider == 'onepassword' }}
+        uses: 1password/install-cli-action@v1
+
+      - name: Load required secrets from 1Password
+        if: ${{ inputs.secret-provider == 'onepassword' && inputs.op-required-secrets != '' }}
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load optional secrets from 1Password
+        if: ${{ inputs.secret-provider == 'onepassword' && inputs.op-optional-secrets != '' }}
+        uses: 1password/load-secrets-action@v2
+        continue-on-error: true
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # --- Common steps ---
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Pre-deploy build steps
+        if: ${{ inputs.pre-deploy-build-steps != '' }}
+        run: ${{ inputs.pre-deploy-build-steps }}
+
+      - name: Type check Convex functions
+        run: npx convex typecheck
+
+      - name: Sync secrets to Convex
+        if: ${{ inputs.sync-secrets-script != '' }}
+        run: |
+          chmod +x ${{ inputs.sync-secrets-script }}
+          ${{ inputs.sync-secrets-script }} ${{ inputs.sync-secrets-args }}
+
+      - name: Deploy to Convex
+        run: npx convex deploy
+
+      - name: Post-deploy steps
+        if: ${{ inputs.post-deploy-steps != '' }}
+        run: ${{ inputs.post-deploy-steps }}
+
+      - name: Deployment summary
+        run: |
+          echo "## Convex Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY

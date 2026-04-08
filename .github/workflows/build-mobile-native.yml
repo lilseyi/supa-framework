@@ -1,0 +1,283 @@
+# Reusable native mobile build workflow
+#
+# Two jobs:
+#   1. detect-native-change: Compares fingerprint hashes between commits to determine
+#      if a native build is actually needed (vs. just metadata changes)
+#   2. build: Runs EAS builds for iOS/Android, optionally submits to stores and uploads
+#      artifacts to R2
+#
+# Supports two secret providers:
+#   - "github-secrets": Uses a composite action at .github/actions/load-secrets
+#   - "onepassword": Uses 1Password CLI
+#
+# Called by consumer repos via `uses: supa-framework/.github/workflows/build-mobile-native.yml@main`
+
+name: Build Mobile Native
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version"
+        type: string
+        default: "22"
+      pnpm-version:
+        description: "pnpm version (empty string uses pnpm/action-setup default)"
+        type: string
+        default: ""
+      secret-provider:
+        description: "Secret provider: 'github-secrets' or 'onepassword'"
+        type: string
+        default: "github-secrets"
+      op-secrets:
+        description: "1Password secret mappings (newline-separated KEY: op://... pairs)"
+        type: string
+        default: ""
+      platform:
+        description: "Platform to build: 'ios', 'android', or 'both'"
+        type: string
+        default: "both"
+      eas-profile:
+        description: "EAS build profile name (e.g. staging, production)"
+        type: string
+        default: "staging"
+      submit:
+        description: "Whether to submit builds to app stores after building"
+        type: boolean
+        default: false
+      submit-profile:
+        description: "EAS submit profile (defaults to eas-profile value)"
+        type: string
+        default: ""
+      github-environment:
+        description: "GitHub environment for deployment protection"
+        type: string
+        default: "staging"
+      skip-detection:
+        description: "Skip native change detection and always build"
+        type: boolean
+        default: false
+      eas-env-sync-commands:
+        description: "Shell commands to sync secrets to EAS environment (run from apps/mobile dir)"
+        type: string
+        default: ""
+      validate-version:
+        description: "Whether to validate version consistency between app.config.js and app.json"
+        type: boolean
+        default: false
+      upload-to-r2:
+        description: "Whether to upload build artifacts to Cloudflare R2"
+        type: boolean
+        default: false
+      r2-upload-commands:
+        description: "Shell commands for R2 upload (run from apps/mobile dir, env vars pre-loaded)"
+        type: string
+        default: ""
+      post-build-commands:
+        description: "Shell commands to run after build completes (run from apps/mobile dir)"
+        type: string
+        default: ""
+      apk-profile:
+        description: "Separate EAS profile for APK builds (e.g. production-apk). Empty to skip."
+        type: string
+        default: ""
+    outputs:
+      native_changed:
+        description: "Whether native code actually changed"
+        value: ${{ jobs.detect-native-change.outputs.native_changed }}
+      version:
+        description: "App version detected"
+        value: ${{ jobs.detect-native-change.outputs.version }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: "1Password service account token"
+        required: false
+
+jobs:
+  detect-native-change:
+    name: Detect Native Changes
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-detection }}
+    outputs:
+      native_changed: ${{ steps.check.outputs.native_changed }}
+      version: ${{ steps.check.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check for native changes
+        id: check
+        working-directory: apps/mobile
+        run: |
+          # Get current version
+          VERSION=$(node -p "require('./app.config.js').default.expo.version" 2>/dev/null || echo "unknown")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          BEFORE_SHA="${{ github.event.before }}"
+          AFTER_SHA="${{ github.sha }}"
+
+          # Handle case where before is all zeros (new branch)
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              BEFORE_SHA="HEAD~1"
+            else
+              if [ -f ".fingerprint" ]; then
+                echo "native_changed=true" >> $GITHUB_OUTPUT
+              else
+                echo "native_changed=false" >> $GITHUB_OUTPUT
+              fi
+              exit 0
+            fi
+          fi
+
+          echo "Comparing $BEFORE_SHA..$AFTER_SHA"
+
+          BEFORE_HASH=$(git show "$BEFORE_SHA:apps/mobile/.fingerprint" 2>/dev/null | grep "FINGERPRINT_HASH=" | cut -d= -f2)
+          AFTER_HASH=$(git show "$AFTER_SHA:apps/mobile/.fingerprint" 2>/dev/null | grep "FINGERPRINT_HASH=" | cut -d= -f2)
+
+          echo "Before FINGERPRINT_HASH: ${BEFORE_HASH:-<not found>}"
+          echo "After FINGERPRINT_HASH: ${AFTER_HASH:-<not found>}"
+
+          if [ -z "$BEFORE_HASH" ]; then
+            echo "No fingerprint in before commit - native build required"
+            echo "native_changed=true" >> $GITHUB_OUTPUT
+          elif [ "$BEFORE_HASH" != "$AFTER_HASH" ]; then
+            echo "FINGERPRINT_HASH changed - native build required"
+            echo "native_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "FINGERPRINT_HASH unchanged - skipping native build"
+            echo "native_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    name: Build Native (${{ inputs.eas-profile }})
+    needs: detect-native-change
+    if: >-
+      inputs.skip-detection ||
+      needs.detect-native-change.outputs.native_changed == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github-environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # --- GitHub Secrets provider ---
+      - name: Load secrets (GitHub)
+        if: ${{ inputs.secret-provider == 'github-secrets' }}
+        uses: ./.github/actions/load-secrets
+        with:
+          secrets-json: ${{ toJSON(secrets) }}
+
+      # --- 1Password provider ---
+      - name: Install 1Password CLI
+        if: ${{ inputs.secret-provider == 'onepassword' }}
+        uses: 1password/install-cli-action@v1
+
+      - name: Load secrets from 1Password
+        if: ${{ inputs.secret-provider == 'onepassword' && inputs.op-secrets != '' }}
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # --- Common steps ---
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate version
+        if: ${{ inputs.validate-version }}
+        working-directory: apps/mobile
+        run: |
+          VERSION=$(node -p "require('./app.config.js').default.expo.version")
+          APP_JSON_VERSION=$(node -p "require('./app.json').expo.version")
+
+          if [ "$VERSION" != "$APP_JSON_VERSION" ]; then
+            echo "Version mismatch! app.config.js=$VERSION app.json=$APP_JSON_VERSION"
+            exit 1
+          fi
+          echo "Version validated: $VERSION"
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ env.EXPO_TOKEN }}
+
+      - name: Sync secrets to EAS
+        if: ${{ inputs.eas-env-sync-commands != '' }}
+        working-directory: apps/mobile
+        run: ${{ inputs.eas-env-sync-commands }}
+
+      - name: Build iOS
+        if: ${{ inputs.platform == 'ios' || inputs.platform == 'both' }}
+        working-directory: apps/mobile
+        run: eas build --platform ios --profile ${{ inputs.eas-profile }} --non-interactive
+
+      - name: Build Android
+        if: ${{ inputs.platform == 'android' || inputs.platform == 'both' }}
+        working-directory: apps/mobile
+        run: eas build --platform android --profile ${{ inputs.eas-profile }} --non-interactive
+
+      - name: Submit iOS to App Store
+        if: ${{ inputs.submit && (inputs.platform == 'ios' || inputs.platform == 'both') }}
+        working-directory: apps/mobile
+        run: eas submit --platform ios --latest --profile ${{ inputs.submit-profile || inputs.eas-profile }} --non-interactive
+
+      - name: Submit Android to Play Store
+        if: ${{ inputs.submit && (inputs.platform == 'android' || inputs.platform == 'both') }}
+        working-directory: apps/mobile
+        run: eas submit --platform android --latest --non-interactive
+
+      - name: Build APK for direct distribution
+        if: ${{ inputs.apk-profile != '' }}
+        working-directory: apps/mobile
+        run: eas build --platform android --profile ${{ inputs.apk-profile }} --non-interactive
+
+      - name: Upload artifacts to R2
+        if: ${{ inputs.upload-to-r2 && inputs.r2-upload-commands != '' }}
+        working-directory: apps/mobile
+        run: ${{ inputs.r2-upload-commands }}
+
+      - name: Post-build commands
+        if: ${{ inputs.post-build-commands != '' }}
+        working-directory: apps/mobile
+        run: ${{ inputs.post-build-commands }}
+
+      - name: Summary
+        run: |
+          echo "## Native Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Profile:** ${{ inputs.eas-profile }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform:** ${{ inputs.platform }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Submit:** ${{ inputs.submit }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY

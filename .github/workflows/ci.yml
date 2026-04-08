@@ -1,0 +1,348 @@
+# Reusable CI workflow for supa-framework consumer apps
+#
+# Runs change detection, shared package tests, mobile checks, convex tests, and optional e2e.
+# Called by consumer repos via `uses: supa-framework/.github/workflows/ci.yml@main`
+
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version"
+        type: string
+        default: "22"
+      pnpm-version:
+        description: "pnpm version (empty string uses pnpm/action-setup default)"
+        type: string
+        default: ""
+      shared-package:
+        description: "Shared package filter name for pnpm (e.g. @togather/shared)"
+        type: string
+        default: ""
+      convex-package:
+        description: "Convex package filter name for pnpm (e.g. fount-convex)"
+        type: string
+        default: ""
+      pre-deploy-build-steps:
+        description: "Newline-separated shell commands to run before typecheck (e.g. build shared pkg, email templates)"
+        type: string
+        default: ""
+      has-e2e:
+        description: "Whether to run Playwright E2E tests"
+        type: boolean
+        default: false
+      change-detection:
+        description: "Whether to use path-based change detection to skip unchanged jobs"
+        type: boolean
+        default: true
+      change-filters:
+        description: "YAML filters for dorny/paths-filter (only used when change-detection is true)"
+        type: string
+        default: |
+          shared:
+            - 'packages/shared/**'
+            - 'package.json'
+            - 'pnpm-lock.yaml'
+            - 'tsconfig.json'
+            - 'pnpm-workspace.yaml'
+          mobile:
+            - 'apps/mobile/**'
+            - 'packages/shared/**'
+            - 'package.json'
+            - 'pnpm-lock.yaml'
+            - 'tsconfig.json'
+            - 'pnpm-workspace.yaml'
+          convex:
+            - 'apps/convex/**'
+            - 'packages/shared/**'
+            - 'package.json'
+            - 'pnpm-lock.yaml'
+            - 'tsconfig.json'
+            - 'pnpm-workspace.yaml'
+          e2e:
+            - 'apps/mobile/**'
+            - 'packages/shared/**'
+            - 'tests/e2e/**'
+            - 'playwright.config.ts'
+            - 'package.json'
+            - 'pnpm-lock.yaml'
+            - 'pnpm-workspace.yaml'
+      mobile-test-command:
+        description: "Command to run mobile tests (from apps/mobile working dir)"
+        type: string
+        default: "pnpm test"
+      has-fingerprint-check:
+        description: "Whether to run fingerprint check in mobile tests"
+        type: boolean
+        default: true
+      has-native-import-check:
+        description: "Whether to run native import gating check in mobile tests"
+        type: boolean
+        default: true
+      has-metro-verify:
+        description: "Whether to verify Metro bundler can resolve all imports"
+        type: boolean
+        default: false
+      metro-env-vars:
+        description: "JSON object of env vars for Metro bundling verification"
+        type: string
+        default: '{}'
+      lint-command:
+        description: "Lint command to run (empty to skip)"
+        type: string
+        default: ""
+      lint-continue-on-error:
+        description: "Whether lint failures should be non-blocking"
+        type: boolean
+        default: true
+
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    if: ${{ inputs.change-detection }}
+    outputs:
+      shared: ${{ steps.changes.outputs.shared }}
+      mobile: ${{ steps.changes.outputs.mobile }}
+      convex: ${{ steps.changes.outputs.convex }}
+      e2e: ${{ steps.changes.outputs.e2e }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect file changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: ${{ inputs.change-filters }}
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    if: ${{ inputs.lint-command != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run lint
+        run: ${{ inputs.lint-command }}
+        continue-on-error: ${{ inputs.lint-continue-on-error }}
+
+  test-shared:
+    name: Test Shared Package
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: >-
+      inputs.shared-package != '' && (
+        !inputs.change-detection ||
+        needs.detect-changes.outputs.shared == 'true'
+      )
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm --filter ${{ inputs.shared-package }} test
+
+  test-mobile:
+    name: Test Mobile App
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: >-
+      !inputs.change-detection ||
+      needs.detect-changes.outputs.mobile == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        working-directory: apps/mobile
+        run: ${{ inputs.mobile-test-command }}
+
+      - name: Check native fingerprint
+        if: ${{ inputs.has-fingerprint-check }}
+        working-directory: apps/mobile
+        run: node scripts/check-fingerprint.js
+
+      - name: Check native import gating
+        if: ${{ inputs.has-native-import-check }}
+        working-directory: apps/mobile
+        run: node scripts/check-native-imports.js
+
+      - name: Verify Metro bundler (catch import errors)
+        if: ${{ inputs.has-metro-verify }}
+        working-directory: apps/mobile
+        env: ${{ fromJSON(inputs.metro-env-vars) }}
+        run: |
+          npx expo export --platform ios --output-dir /tmp/expo-bundle-check --clear --no-bytecode --no-minify
+
+  test-convex:
+    name: Test Convex Backend
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: >-
+      !inputs.change-detection ||
+      needs.detect-changes.outputs.convex == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Pre-deploy build steps
+        if: ${{ inputs.pre-deploy-build-steps != '' }}
+        run: ${{ inputs.pre-deploy-build-steps }}
+
+      - name: Type check Convex functions
+        run: npx convex typecheck
+
+      - name: Run Convex tests
+        run: |
+          if [ -n "${{ inputs.convex-package }}" ]; then
+            pnpm --filter ${{ inputs.convex-package }} test
+          else
+            cd apps/convex && pnpm test
+          fi
+
+  test-e2e:
+    name: E2E Tests (Playwright)
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: >-
+      inputs.has-e2e && (
+        !inputs.change-detection ||
+        needs.detect-changes.outputs.e2e == 'true'
+      )
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        run: pnpm test:e2e
+        env:
+          CI: true
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: test-results/
+          retention-days: 7
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [detect-changes, lint, test-shared, test-mobile, test-convex, test-e2e]
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          # If change detection is enabled, verify it succeeded
+          if [ "${{ inputs.change-detection }}" = "true" ]; then
+            detect="${{ needs.detect-changes.result }}"
+            if [ "$detect" != "success" ]; then
+              echo "detect-changes: $detect"
+              echo "Change detection failed - cannot determine which tests to run"
+              exit 1
+            fi
+            echo "detect-changes: $detect"
+          fi
+
+          # Skipped jobs (due to no relevant changes or disabled features) count as passing
+          failed=false
+          for job in lint test-shared test-mobile test-convex test-e2e; do
+            result=""
+            case "$job" in
+              lint) result="${{ needs.lint.result }}" ;;
+              test-shared) result="${{ needs.test-shared.result }}" ;;
+              test-mobile) result="${{ needs.test-mobile.result }}" ;;
+              test-convex) result="${{ needs.test-convex.result }}" ;;
+              test-e2e) result="${{ needs.test-e2e.result }}" ;;
+            esac
+
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "FAIL $job: $result"
+              failed=true
+            else
+              echo "OK   $job: $result"
+            fi
+          done
+
+          if [ "$failed" = true ]; then
+            echo ""
+            echo "One or more test suites failed"
+            exit 1
+          fi
+          echo ""
+          echo "All tests passed!"

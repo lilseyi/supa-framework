@@ -1,0 +1,237 @@
+# Reusable web deployment workflow
+#
+# Supports two hosting targets:
+#   - "eas": Expo/EAS Hosting (export + eas-cli deploy)
+#   - "cloudflare": Cloudflare Pages (custom build + wrangler deploy)
+#
+# Supports two secret providers:
+#   - "github-secrets": Uses a composite action at .github/actions/load-secrets
+#   - "onepassword": Uses 1Password CLI
+#
+# Called by consumer repos via `uses: supa-framework/.github/workflows/deploy-web.yml@main`
+
+name: Deploy Web
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (staging or production)"
+        type: string
+        required: true
+      node-version:
+        description: "Node.js version"
+        type: string
+        default: "22"
+      pnpm-version:
+        description: "pnpm version (empty string uses pnpm/action-setup default)"
+        type: string
+        default: ""
+      secret-provider:
+        description: "Secret provider: 'github-secrets' or 'onepassword'"
+        type: string
+        default: "github-secrets"
+      op-secrets:
+        description: "1Password secret mappings (newline-separated KEY: op://... pairs)"
+        type: string
+        default: ""
+      hosting:
+        description: "Hosting platform: 'eas' or 'cloudflare'"
+        type: string
+        default: "eas"
+      # --- EAS Hosting options ---
+      eas-prod-flag:
+        description: "Whether to pass --prod flag to eas deploy"
+        type: boolean
+        default: false
+      eas-environment:
+        description: "EAS environment flag (e.g. preview, production)"
+        type: string
+        default: ""
+      eas-aliases:
+        description: "Space-separated list of subdomain aliases to update after EAS deploy"
+        type: string
+        default: ""
+      export-env-vars:
+        description: "JSON object of env vars for expo export (e.g. EXPO_PUBLIC_CONVEX_URL)"
+        type: string
+        default: '{}'
+      # --- Cloudflare Pages options ---
+      build-command:
+        description: "Build command for Cloudflare Pages (run from repo root)"
+        type: string
+        default: ""
+      build-filter:
+        description: "pnpm filter for the web package to build"
+        type: string
+        default: ""
+      cloudflare-project:
+        description: "Cloudflare Pages project name"
+        type: string
+        default: ""
+      cloudflare-deploy-dir:
+        description: "Directory to deploy to Cloudflare Pages (relative to repo root)"
+        type: string
+        default: ""
+      cloudflare-branch:
+        description: "Branch name for Cloudflare Pages"
+        type: string
+        default: "main"
+      github-environment:
+        description: "GitHub environment name for deployment protection"
+        type: string
+        default: ""
+    outputs:
+      deployment_id:
+        description: "Deployment identifier (EAS hosting only)"
+        value: ${{ jobs.deploy.outputs.deployment_id }}
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: "1Password service account token"
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy Web (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.github-environment || inputs.environment }}
+    outputs:
+      deployment_id: ${{ steps.eas-deploy.outputs.deployment_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- GitHub Secrets provider ---
+      - name: Load secrets (GitHub)
+        if: ${{ inputs.secret-provider == 'github-secrets' }}
+        uses: ./.github/actions/load-secrets
+        with:
+          secrets-json: ${{ toJSON(secrets) }}
+
+      # --- 1Password provider ---
+      - name: Install 1Password CLI
+        if: ${{ inputs.secret-provider == 'onepassword' }}
+        uses: 1password/install-cli-action@v1
+
+      - name: Load secrets from 1Password
+        if: ${{ inputs.secret-provider == 'onepassword' && inputs.op-secrets != '' }}
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # --- Common setup ---
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --- EAS Hosting ---
+      - name: Setup EAS
+        if: ${{ inputs.hosting == 'eas' }}
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ env.EXPO_TOKEN }}
+
+      - name: Export web bundle
+        if: ${{ inputs.hosting == 'eas' }}
+        working-directory: apps/mobile
+        env: ${{ fromJSON(inputs.export-env-vars) }}
+        run: npx expo export --platform web
+
+      - name: Deploy to EAS Hosting
+        if: ${{ inputs.hosting == 'eas' }}
+        id: eas-deploy
+        working-directory: apps/mobile
+        run: |
+          # Build deploy flags
+          PROD_FLAG=""
+          ENV_FLAG=""
+          if [ "${{ inputs.eas-prod-flag }}" = "true" ]; then
+            PROD_FLAG="--prod"
+          fi
+          if [ -n "${{ inputs.eas-environment }}" ]; then
+            ENV_FLAG="--environment=${{ inputs.eas-environment }}"
+          fi
+
+          echo "Deploying with flags: $PROD_FLAG $ENV_FLAG"
+
+          npx eas-cli deploy $PROD_FLAG $ENV_FLAG --json --non-interactive > deploy_output.json || true
+
+          echo "Deploy output:"
+          cat deploy_output.json
+
+          DEPLOYMENT_ID=$(cat deploy_output.json | jq -r '.identifier // empty' 2>/dev/null)
+          if [ -z "$DEPLOYMENT_ID" ]; then
+            DEPLOYMENT_ID=$(grep -o '"identifier":"[^"]*"' deploy_output.json | head -1 | cut -d'"' -f4)
+          fi
+
+          echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+
+          if [ -z "$DEPLOYMENT_ID" ]; then
+            echo "Failed to get deployment ID"
+            cat deploy_output.json
+            exit 1
+          fi
+
+          echo "Deployed with ID: $DEPLOYMENT_ID"
+
+      - name: Update subdomain aliases
+        if: ${{ inputs.hosting == 'eas' && inputs.eas-aliases != '' }}
+        working-directory: apps/mobile
+        run: |
+          DEPLOYMENT_ID="${{ steps.eas-deploy.outputs.deployment_id }}"
+          echo "Updating subdomain aliases to deployment: $DEPLOYMENT_ID"
+
+          for ALIAS in ${{ inputs.eas-aliases }}; do
+            echo "  Updating alias: $ALIAS"
+            npx eas-cli deploy:alias --alias "$ALIAS" --id "$DEPLOYMENT_ID" --non-interactive
+          done
+
+          echo "All aliases updated"
+
+      # --- Cloudflare Pages ---
+      - name: Build for Cloudflare
+        if: ${{ inputs.hosting == 'cloudflare' && inputs.build-filter != '' }}
+        run: pnpm --filter ${{ inputs.build-filter }} build
+
+      - name: Build for Cloudflare (custom command)
+        if: ${{ inputs.hosting == 'cloudflare' && inputs.build-command != '' && inputs.build-filter == '' }}
+        run: ${{ inputs.build-command }}
+
+      - name: Install Wrangler
+        if: ${{ inputs.hosting == 'cloudflare' }}
+        run: npm install -g wrangler
+
+      - name: Deploy to Cloudflare Pages
+        if: ${{ inputs.hosting == 'cloudflare' }}
+        working-directory: ${{ inputs.cloudflare-deploy-dir }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler pages deploy . --project-name=${{ inputs.cloudflare-project }} --branch=${{ inputs.cloudflare-branch }}
+
+      - name: Deployment summary
+        run: |
+          echo "## Web Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Hosting:** ${{ inputs.hosting }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ steps.eas-deploy.outputs.deployment_id }}" ]; then
+            echo "- **Deployment ID:** \`${{ steps.eas-deploy.outputs.deployment_id }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY

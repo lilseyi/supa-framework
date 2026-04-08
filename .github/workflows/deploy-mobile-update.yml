@@ -1,0 +1,188 @@
+# Reusable OTA (Over-The-Air) mobile update workflow
+#
+# Publishes a JS-only update via EAS Update. Verifies fingerprint hasn't changed
+# (native code unchanged) before publishing.
+#
+# Supports two secret providers:
+#   - "github-secrets": Uses a composite action at .github/actions/load-secrets
+#   - "onepassword": Uses 1Password CLI
+#
+# Called by consumer repos via `uses: supa-framework/.github/workflows/deploy-mobile-update.yml@main`
+
+name: Deploy Mobile Update
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "EAS Update channel (e.g. staging, production)"
+        type: string
+        required: true
+      node-version:
+        description: "Node.js version"
+        type: string
+        default: "22"
+      pnpm-version:
+        description: "pnpm version (empty string uses pnpm/action-setup default)"
+        type: string
+        default: ""
+      secret-provider:
+        description: "Secret provider: 'github-secrets' or 'onepassword'"
+        type: string
+        default: "github-secrets"
+      op-secrets:
+        description: "1Password secret mappings for EXPO_TOKEN and other required secrets"
+        type: string
+        default: ""
+      eas-environment:
+        description: "EAS environment flag (e.g. preview, production). If empty, not passed."
+        type: string
+        default: ""
+      fingerprint-enforce:
+        description: "Whether to enforce fingerprint check (fail if native code changed)"
+        type: boolean
+        default: true
+      runtime-version-command:
+        description: "Shell command to get runtime version (run from apps/mobile dir)"
+        type: string
+        default: "node -p \"require('./app.config.js').default.expo.runtimeVersion\""
+      eas-env-sync-commands:
+        description: "Shell commands to sync secrets to EAS environment (run from apps/mobile dir)"
+        type: string
+        default: ""
+      update-message:
+        description: "Custom update message (leave empty for auto-generated)"
+        type: string
+        default: ""
+      github-environment:
+        description: "GitHub environment name for deployment protection"
+        type: string
+        default: ""
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        description: "1Password service account token (required when secret-provider is 'onepassword')"
+        required: false
+
+jobs:
+  update:
+    name: Push OTA Update (${{ inputs.channel }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github-environment || inputs.channel }}
+    defaults:
+      run:
+        working-directory: apps/mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- GitHub Secrets provider ---
+      - name: Load secrets (GitHub)
+        if: ${{ inputs.secret-provider == 'github-secrets' }}
+        uses: ./.github/actions/load-secrets
+        with:
+          secrets-json: ${{ toJSON(secrets) }}
+
+      # --- 1Password provider ---
+      - name: Install 1Password CLI
+        if: ${{ inputs.secret-provider == 'onepassword' }}
+        uses: 1password/install-cli-action@v1
+
+      - name: Load secrets from 1Password
+        if: ${{ inputs.secret-provider == 'onepassword' && inputs.op-secrets != '' }}
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # --- Common steps ---
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version || null }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: .
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ env.EXPO_TOKEN }}
+
+      - name: Sync secrets to EAS
+        if: ${{ inputs.eas-env-sync-commands != '' }}
+        run: ${{ inputs.eas-env-sync-commands }}
+
+      - name: Check for native code changes
+        if: ${{ inputs.fingerprint-enforce }}
+        run: |
+          echo "Checking if native code has changed..."
+          node scripts/check-fingerprint.js
+
+          if [ $? -ne 0 ]; then
+            echo "Native code has changed! Cannot push OTA update."
+            echo "A new native build is required."
+            exit 1
+          fi
+
+          echo "Fingerprint matches - safe to push OTA update"
+
+      - name: Generate OTA version
+        id: ota_version
+        run: |
+          RUNTIME_VERSION=$(${{ inputs.runtime-version-command }})
+          DATE_PART=$(date -u +"%m%d%y")
+          TIME_PART=$(date -u +"%H%M")
+          OTA_VERSION="${RUNTIME_VERSION}.${DATE_PART}.${TIME_PART}"
+          echo "ota_version=$OTA_VERSION" >> $GITHUB_OUTPUT
+          echo "Generated OTA version: $OTA_VERSION"
+
+      - name: Publish OTA Update
+        env:
+          UPDATE_CHANNEL: ${{ inputs.channel }}
+          OTA_VERSION: ${{ steps.ota_version.outputs.ota_version }}
+          EAS_ENV: ${{ inputs.eas-environment }}
+        run: |
+          # Determine message
+          if [ -n "${{ inputs.update-message }}" ]; then
+            MSG="${{ inputs.update-message }}"
+          else
+            # Try to use commit subject, fall back to version
+            COMMIT_MSG="${{ github.event.head_commit.message }}"
+            if [ -n "$COMMIT_MSG" ]; then
+              MSG=$(echo "$COMMIT_MSG" | head -n 1)
+            else
+              MSG="OTA v$OTA_VERSION"
+            fi
+          fi
+
+          echo "Publishing to channel: $UPDATE_CHANNEL"
+          echo "OTA Version: $OTA_VERSION"
+
+          # Build the command
+          CMD="eas update --channel \"$UPDATE_CHANNEL\" --message \"$MSG\" --non-interactive"
+          if [ -n "$EAS_ENV" ]; then
+            CMD="eas update --channel \"$UPDATE_CHANNEL\" --environment $EAS_ENV --message \"$MSG\" --non-interactive"
+          fi
+
+          eval $CMD
+
+      - name: Deployment summary
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          OTA_VERSION: ${{ steps.ota_version.outputs.ota_version }}
+        run: |
+          echo "## OTA Update Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Channel:** $CHANNEL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** $OTA_VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY
