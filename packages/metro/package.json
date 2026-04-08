@@ -1,0 +1,20 @@
+{
+  "name": "@supa/metro",
+  "version": "0.1.0",
+  "description": "Metro bundler config factory for pnpm monorepos with Expo",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "files": ["src"],
+  "peerDependencies": {
+    "@expo/metro-config": "*"
+  },
+  "peerDependenciesMeta": {
+    "nativewind": {
+      "optional": true
+    },
+    "@sentry/react-native": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
