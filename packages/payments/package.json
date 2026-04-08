@@ -1,0 +1,51 @@
+{
+  "name": "@supa/payments",
+  "version": "0.1.0",
+  "description": "Stripe payment integration for Supa apps — hooks, components, and config for subscriptions and checkout",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "default": "./dist/config/index.js"
+    },
+    "./hooks": {
+      "types": "./dist/hooks/index.d.ts",
+      "default": "./dist/hooks/index.js"
+    },
+    "./components": {
+      "types": "./dist/components/index.d.ts",
+      "default": "./dist/components/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/types/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "convex": ">=1.0.0",
+    "react": ">=18.0.0",
+    "react-native": ">=0.76.0",
+    "@stripe/stripe-react-native": ">=0.35.0"
+  },
+  "peerDependenciesMeta": {
+    "@stripe/stripe-react-native": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
