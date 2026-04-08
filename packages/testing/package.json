@@ -1,0 +1,27 @@
+{
+  "name": "@supa/testing",
+  "version": "0.1.0",
+  "description": "Reusable test suites that catch common Expo/React Native gotchas — routing conflicts, web bundle safety, React resolution, native import gating",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "expo",
+    "react-native",
+    "testing",
+    "routing",
+    "web-bundle",
+    "metro",
+    "native-imports"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "license": "MIT"
+}
