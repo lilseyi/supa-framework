@@ -1,0 +1,21 @@
+{
+  "name": "@supa/scripts",
+  "version": "0.1.0",
+  "description": "CI/deploy helper scripts for Supa apps",
+  "bin": {
+    "supa-sync-secrets": "./src/sync-secrets-to-convex.sh",
+    "supa-generate-ota-version": "./src/generate-ota-version.js",
+    "supa-setup-secrets": "./src/setup-secrets.sh",
+    "supa-bump-version": "./src/bump-version.js"
+  },
+  "scripts": {
+    "sync-secrets": "./src/sync-secrets-to-convex.sh",
+    "setup-secrets": "./src/setup-secrets.sh",
+    "generate-ota-version": "node ./src/generate-ota-version.js",
+    "bump-version": "node ./src/bump-version.js"
+  },
+  "files": [
+    "src/"
+  ],
+  "license": "MIT"
+}
